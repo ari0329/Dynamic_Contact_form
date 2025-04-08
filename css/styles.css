@@ -1,0 +1,73 @@
+
+
+/* Form Title */
+.form-title {
+    font-size: 2em;
+    color: #333;
+    margin-bottom: 20px;
+}
+
+/* Form Group (input/textarea) */
+.form-group {
+    margin-bottom: 20px;
+    text-align: left;
+}
+
+/* Labels */
+.form-group label {
+    font-size: 1.1em;
+    color: #555;
+    display: block;
+    margin-bottom: 8px;
+}
+
+/* Input Fields */
+.contact-form input,
+.contact-form textarea {
+    width: 100%;
+    max-width: 100%;
+    padding: 12px;
+    font-size: 1em;
+    border: 2px solid #ddd;
+    border-radius: 5px;
+    box-sizing: border-box;
+    transition: all 0.3s ease;
+}
+
+/* Focused Input Fields */
+.contact-form input:focus,
+.contact-form textarea:focus {
+    border-color: #4CAF50;
+    box-shadow: 0 0 8px rgba(0, 128, 0, 0.2);
+}
+
+/* Submit Button */
+.submit-btn {
+    background-color: #4CAF50;
+    color: white;
+    padding: 14px 20px;
+    font-size: 1.1em;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    width: 100%;
+    transition: background-color 0.3s ease;
+}
+
+/* Submit Button Hover Effect */
+.submit-btn:hover {
+    background-color: #4a90e2;
+}
+
+
+
+/* Responsive Design */
+@media screen and (max-width: 768px) {
+    .contact-form-container {
+        padding: 20px;
+        margin: 20px;
+    }
+    .form-title {
+        font-size: 1.8em;
+    }
+}
