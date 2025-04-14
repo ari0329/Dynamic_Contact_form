@@ -2,7 +2,7 @@
 /*
 Plugin Name: Dynamic Contact Form Management 
 Description: A customizable contact form plugin with dynamic column management 
-Version: 7.1.2
+Version: 7.1.3
 Author: ari0329
 */
 
@@ -191,7 +191,7 @@ class DynamicContactFormManager {
         add_action('admin_menu', [$this, 'create_admin_menu']);
         add_action('init', [$this, 'register_shortcode']);
         add_action('init', [$this, 'check_and_create_tables']);
-        add_action('wp_enqueue_scripts', [$this, 'register_scripts'], 999); // Higher priority
+        add_action('wp_enqueue_scripts', [$this, 'register_scripts'], 999);
         add_action('wp_ajax_submit_contact_form', [$this, 'handle_ajax_submission']);
         add_action('wp_ajax_nopriv_submit_contact_form', [$this, 'handle_ajax_submission']);
         add_action('admin_init', [$this, 'handle_csv_export']);
@@ -343,19 +343,17 @@ class DynamicContactFormManager {
             'dcfm-form-script',
             plugins_url('js/form-handler.js', __FILE__),
             array('jquery'),
-            '1.2.1',
+            '1.2.1.' . time(), // Cache buster
             true
         );
         
-        // Enqueue base form styles
         wp_enqueue_style(
             'dcfm-form-styles',
             plugins_url('css/styles.css', __FILE__),
             array(),
-            '1.1.0'
+            '1.1.0.' . time()
         );
 
-        // Enqueue Bootstrap CSS
         wp_enqueue_style(
             'bootstrap-css',
             'https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css',
@@ -363,19 +361,27 @@ class DynamicContactFormManager {
             '5.3.0'
         );
 
-        // Enqueue custom CSS with highest priority
         $custom_css = get_option('dcfm_custom_css', '');
+        error_log('DCFM: Retrieved custom CSS from database: ' . (empty($custom_css) ? 'Empty' : $custom_css));
+        
         if (!empty($custom_css)) {
-            // Add !important to CSS rules that don't already have it
-            $custom_css = $this->add_important_to_css($custom_css);
+            // Wrap CSS in .dcfm-form-wrapper for specificity
+            $wrapped_css = ".dcfm-form-wrapper {\n" . $this->add_important_to_css($custom_css) . "\n}";
             
             wp_enqueue_style(
                 'dcfm-custom-styles',
-                false, // No external file, using inline
-                array('dcfm-form-styles', 'bootstrap-css'), // Dependencies
-                '1.1.0'
+                false,
+                array('dcfm-form-styles', 'bootstrap-css'),
+                '1.1.0.' . time()
             );
-            wp_add_inline_style('dcfm-custom-styles', $custom_css);
+            $enqueue_result = wp_add_inline_style('dcfm-custom-styles', $wrapped_css);
+            if ($enqueue_result === false) {
+                error_log('DCFM: Failed to enqueue custom CSS with wp_add_inline_style');
+            } else {
+                error_log('DCFM: Custom CSS enqueued successfully: ' . $wrapped_css);
+            }
+        } else {
+            error_log('DCFM: No custom CSS to enqueue');
         }
 
         wp_localize_script('dcfm-form-script', 'dcfmAjax', array(
@@ -385,26 +391,25 @@ class DynamicContactFormManager {
     }
 
     private function add_important_to_css($css) {
-        // Split CSS into individual rules
-        $rules = explode('}', $css);
+        $lines = explode("\n", trim($css));
         $modified_css = '';
         
-        foreach ($rules as $rule) {
-            $rule = trim($rule);
-            if (empty($rule)) {
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if (empty($line) || strpos($line, '{') !== false || strpos($line, '}') !== false) {
+                $modified_css .= $line . "\n";
                 continue;
             }
             
-            // Check if rule already has !important
-            if (strpos($rule, '!important') === false) {
-                // Add !important before the closing semicolon of each property
-                $rule = preg_replace('/;(?=\s*$)/', ' !important;', $rule);
-                $rule = preg_replace('/;(?=\s*[^\s;}]+)/', ' !important;', $rule);
+            if (strpos($line, '!important') === false && strpos($line, ':') !== false && substr($line, -1) === ';') {
+                $line = str_replace(';', ' !important;', $line);
             }
             
-            $modified_css .= $rule . '}';
+            $modified_css .= $line . "\n";
         }
         
+        $modified_css = trim($modified_css);
+        error_log('DCFM: Modified CSS after adding !important: ' . $modified_css);
         return $modified_css;
     }
 
@@ -1104,9 +1109,20 @@ class DynamicContactFormManager {
             $captcha .= $characters[rand(0, strlen($characters) - 1)];
         }
 
+        // Fallback: Inject custom CSS directly
+        $custom_css = get_option('dcfm_custom_css', '');
+        $inline_css = '';
+        if (!empty($custom_css)) {
+            $inline_css = ".dcfm-form-wrapper-$form_id {\n" . $this->add_important_to_css($custom_css) . "\n}";
+            error_log('DCFM: Injecting inline CSS for form ' . $form_id . ': ' . $inline_css);
+        }
+
         ob_start();
         ?>
-        <div class="dcfm-form-wrapper">
+        <div class="dcfm-form-wrapper dcfm-form-wrapper-<?php echo esc_attr($form_id); ?>">
+            <?php if (!empty($inline_css)): ?>
+                <style><?php echo esc_html($inline_css); ?></style>
+            <?php endif; ?>
             <div id="form-message-<?php echo esc_attr($form_id); ?>"></div>
             <form id="dcfm-form-<?php echo esc_attr($form_id); ?>" class="dcfm-form" method="post">
                 <?php foreach ($ordered_fields as $field): ?>
@@ -1199,7 +1215,7 @@ class DynamicContactFormManager {
                             <button type="button" class="reset-captcha">↻</button>
                         </div>
                         <div class="col-12 col-md-9">
-                            <input type="text" id="captcha_input" name="captcha_input" class="form-control" required placeholder="Enter code" required>
+                            <input type="text" id="captcha_input" name="captcha_input" class="form-control" required placeholder="Enter code">
                             <input type="hidden" id="captcha_answer-<?php echo esc_attr($form_id); ?>" name="captcha_answer" value="<?php echo $captcha; ?>">
                         </div>
                     </div>
@@ -1391,11 +1407,19 @@ class DynamicContactFormManager {
                 wp_die('Security check failed');
             }
 
-            update_option('dcfm_custom_css', wp_kses_post($_POST['custom_css']));
-            echo '<div class="updated"><p>Style settings saved successfully!</p></div>';
+            $custom_css = sanitize_textarea_field($_POST['custom_css']);
+            $update_result = update_option('dcfm_custom_css', $custom_css);
+            error_log('DCFM: Custom CSS save attempt - Result: ' . ($update_result ? 'Success' : 'Failed') . ', CSS: ' . $custom_css);
+            
+            if ($update_result) {
+                echo '<div class="updated"><p>Style settings saved successfully!</p></div>';
+            } else {
+                echo '<div class="error"><p>Failed to save style settings.</p></div>';
+            }
         }
 
         $custom_css = get_option('dcfm_custom_css', '');
+        error_log('DCFM: Loaded custom CSS for Style Settings page: ' . (empty($custom_css) ? 'Empty' : $custom_css));
 
         ?>
         <div class="wrap">
@@ -1407,7 +1431,28 @@ class DynamicContactFormManager {
                         <th><label for="custom_css">Custom CSS</label></th>
                         <td>
                             <textarea name="custom_css" id="custom_css" rows="10" class="large-text code"><?php echo esc_textarea($custom_css); ?></textarea>
-                            <p class="description">Add custom CSS to style your forms. These styles will override all other CSS with !important flags.</p>
+                            <p class="description">
+                                Add custom CSS to style your forms. Use these selectors:
+                                <ul>
+                                    <li><code>.dcfm-form-wrapper</code>: Form container</li>
+                                    <li><code>.dcfm-form</code>: Form element</li>
+                                    <li><code>.form-field</code>: Individual field container</li>
+                                    <li><code>.submit-button</code>: Submit button (also has <code>.btn.btn-primary</code>)</li>
+                                    <li><code>.captcha-field</code>: Captcha container</li>
+                                </ul>
+                                Example:
+                                <pre>
+.dcfm-form input {
+    background-color: #e0f7fa;
+    border: 2px solid #0288d1;
+}
+.dcfm-form .submit-button {
+    background-color: #0288d1;
+    color: white;
+}
+                                </pre>
+                                Note: Styles are wrapped in <code>.dcfm-form-wrapper</code> and applied with <code>!important</code> to override defaults.
+                            </p>
                         </td>
                     </tr>
                 </table>
