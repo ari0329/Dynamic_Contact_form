@@ -2,7 +2,7 @@
 /*
 Plugin Name: Dynamic Contact Form Management 
 Description: A customizable contact form plugin with dynamic column management 
-Version: 7.1.3
+Version: 7.2.5
 Author: ari0329
 */
 
@@ -108,6 +108,7 @@ class DCFM_Email_Handler {
     }
 
     private function generate_admin_email_content($submission_data) {
+        $header_color = get_option('dcfm_email_header_color', '#2271b1');
         ob_start();
         ?>
         <!DOCTYPE html>
@@ -117,7 +118,7 @@ class DCFM_Email_Handler {
                 table {border-collapse: collapse; width: 100%; max-width: 600px;}
                 th, td {border: 1px solid #ddd; padding: 8px; text-align: left;}
                 th {background-color: #f8f8f8;}
-                .header {background-color: #2271b1; color: white; padding: 20px; text-align: center;}
+                .header {background-color: <?php echo esc_attr($header_color); ?>; color: white; padding: 20px; text-align: center;}
             </style>
         </head>
         <body>
@@ -142,6 +143,9 @@ class DCFM_Email_Handler {
     }
 
     private function generate_user_email_content($submission_data) {
+        $header_color = get_option('dcfm_email_header_color', '#2271b1');
+        $user_email_header = get_option('dcfm_user_email_header', '<p>Thank you for reaching out to us. We have received your submission and will get back to you soon.</p><p>Here\'s a copy of the information you submitted:</p>');
+        $user_email_footer = get_option('dcfm_user_email_footer', '<p style="color: #666; font-size: 12px; margin-top: 20px;">This is an automated response from ' . esc_html($this->site_name) . '. Please do not reply to this email.</p>');
         ob_start();
         ?>
         <!DOCTYPE html>
@@ -151,7 +155,7 @@ class DCFM_Email_Handler {
                 table {border-collapse: collapse; width: 100%; max-width: 600px;}
                 th, td {border: 1px solid #ddd; padding: 8px; text-align: left;}
                 th {background-color: #f8f8f8;}
-                .header {background-color: #2271b1; color: white; padding: 20px; text-align: center;}
+                .header {background-color: <?php echo esc_attr($header_color); ?>; color: white; padding: 20px; text-align: center;}
                 .thank-you {font-size: 16px; line-height: 1.6; margin: 20px 0;}
             </style>
         </head>
@@ -160,8 +164,7 @@ class DCFM_Email_Handler {
                 <h2>Thank You for Contacting <?php echo esc_html($this->site_name); ?></h2>
             </div>
             <div class="thank-you">
-                <p>Thank you for reaching out to us. We have received your submission and will get back to you soon.</p>
-                <p>Here's a copy of the information you submitted:</p>
+                <?php echo wp_kses_post($user_email_header); ?>
             </div>
             <table>
                 <?php foreach ($submission_data as $key => $value): ?>
@@ -171,9 +174,7 @@ class DCFM_Email_Handler {
                 </tr>
                 <?php endforeach; ?>
             </table>
-            <p style="color: #666; font-size: 12px; margin-top: 20px;">
-                This is an automated response from <?php echo esc_html($this->site_name); ?>. Please do not reply to this email.
-            </p>
+            <?php echo wp_kses_post($user_email_footer); ?>
         </body>
         </html>
         <?php
@@ -287,18 +288,28 @@ class DynamicContactFormManager {
     
         require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
     
+        // Create or update fields table
         $sql_fields = "CREATE TABLE $fields_table (
             id mediumint(9) NOT NULL AUTO_INCREMENT,
             field_name varchar(100) NOT NULL,
             field_type varchar(50) NOT NULL,
             is_required tinyint(1) DEFAULT 0,
             options text DEFAULT NULL,
+            placeholder varchar(255) DEFAULT NULL,
             created_at datetime DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY  (id)
         ) $charset_collate;";
         
         dbDelta($sql_fields);
     
+        // Check if placeholder column exists, and add it if missing
+        $columns = $wpdb->get_results("SHOW COLUMNS FROM $fields_table LIKE 'placeholder'");
+        if (empty($columns)) {
+            $wpdb->query("ALTER TABLE $fields_table ADD placeholder varchar(255) DEFAULT NULL AFTER options");
+            error_log('DCFM: Added placeholder column to dcfm_fields table');
+        }
+    
+        // Create forms table
         $sql_forms = "CREATE TABLE $forms_table (
             id mediumint(9) NOT NULL AUTO_INCREMENT,
             title varchar(200) NOT NULL,
@@ -310,6 +321,7 @@ class DynamicContactFormManager {
         
         dbDelta($sql_forms);
     
+        // Create submissions table
         $sql_submissions = "CREATE TABLE $submissions_table (
             id mediumint(9) NOT NULL AUTO_INCREMENT,
             form_id mediumint(9) NOT NULL,
@@ -320,10 +332,12 @@ class DynamicContactFormManager {
         
         dbDelta($sql_submissions);
     
+        // Verify table creation
         if ($wpdb->get_var("SHOW TABLES LIKE '$fields_table'") != $fields_table) {
             error_log("DCFM: Failed to create fields table");
         }
         
+        // Ensure default email field exists
         if (!$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $fields_table WHERE field_name = %s", 'email'))) {
             $result = $wpdb->insert($fields_table, [
                 'field_name' => 'email',
@@ -343,7 +357,7 @@ class DynamicContactFormManager {
             'dcfm-form-script',
             plugins_url('js/form-handler.js', __FILE__),
             array('jquery'),
-            '1.2.1.' . time(), // Cache buster
+            '1.2.1.' . time(),
             true
         );
         
@@ -365,7 +379,6 @@ class DynamicContactFormManager {
         error_log('DCFM: Retrieved custom CSS from database: ' . (empty($custom_css) ? 'Empty' : $custom_css));
         
         if (!empty($custom_css)) {
-            // Wrap CSS in .dcfm-form-wrapper for specificity
             $wrapped_css = ".dcfm-form-wrapper {\n" . $this->add_important_to_css($custom_css) . "\n}";
             
             wp_enqueue_style(
@@ -879,6 +892,7 @@ class DynamicContactFormManager {
             $options = ($field_type === 'select' && isset($_POST['select_options'])) ? 
                 sanitize_text_field($_POST['select_options']) : '';
             $is_required = isset($_POST['is_required']) ? 1 : 0;
+            $placeholder = isset($_POST['placeholder']) ? sanitize_text_field($_POST['placeholder']) : '';
 
             $result = $wpdb->insert(
                 $fields_table,
@@ -886,9 +900,10 @@ class DynamicContactFormManager {
                     'field_name' => $field_name,
                     'field_type' => $field_type,
                     'is_required' => $is_required,
-                    'options' => $options
+                    'options' => $options,
+                    'placeholder' => $placeholder
                 ],
-                ['%s', '%s', '%d', '%s']
+                ['%s', '%s', '%d', '%s', '%s']
             );
             
             if ($result === false) {
@@ -898,7 +913,8 @@ class DynamicContactFormManager {
                     'field_name' => $field_name,
                     'field_type' => $field_type,
                     'is_required' => $is_required,
-                    'options' => $options
+                    'options' => $options,
+                    'placeholder' => $placeholder
                 ], true));
             } else {
                 echo '<div class="updated"><p>Field added successfully!</p></div>';
@@ -912,6 +928,7 @@ class DynamicContactFormManager {
             $options = ($field_type === 'select' && isset($_POST['select_options'])) ? 
                 sanitize_text_field($_POST['select_options']) : '';
             $is_required = isset($_POST['is_required']) ? 1 : 0;
+            $placeholder = isset($_POST['placeholder']) ? sanitize_text_field($_POST['placeholder']) : '';
 
             $result = $wpdb->update(
                 $fields_table,
@@ -919,10 +936,11 @@ class DynamicContactFormManager {
                     'field_name' => $field_name,
                     'field_type' => $field_type,
                     'is_required' => $is_required,
-                    'options' => $options
+                    'options' => $options,
+                    'placeholder' => $placeholder
                 ],
                 ['id' => $field_id],
-                ['%s', '%s', '%d', '%s'],
+                ['%s', '%s', '%d', '%s', '%s'],
                 ['%d']
             );
             
@@ -1001,6 +1019,18 @@ class DynamicContactFormManager {
                             >
                         </td>
                     </tr>
+                    <tr>
+                        <th><label for="placeholder">Placeholder</label></th>
+                        <td>
+                            <input type="text" 
+                                   name="placeholder" 
+                                   id="placeholder" 
+                                   class="regular-text"
+                                   value="<?php echo $edit_mode && isset($edit_field->placeholder) ? esc_attr($edit_field->placeholder) : ''; ?>"
+                                   placeholder="Enter placeholder text">
+                            <p class="description">Optional placeholder text for text, email, tel, textarea, number, or date fields (visible in the input field)</p>
+                        </td>
+                    </tr>
                 </table>
                 <p class="submit">
                     <input type="submit" 
@@ -1021,6 +1051,7 @@ class DynamicContactFormManager {
                         <th>Field Type</th>
                         <th>Required</th>
                         <th>Options</th>
+                        <th>Placeholder</th>
                         <th>Created Date</th>
                         <th>Actions</th>
                     </tr>
@@ -1032,6 +1063,7 @@ class DynamicContactFormManager {
                             <td><?php echo esc_html($field->field_type); ?></td>
                             <td><?php echo $field->is_required ? 'Yes' : 'No'; ?></td>
                             <td><?php echo ($field->field_type === 'select' && $field->options) ? esc_html($field->options) : '-'; ?></td>
+                            <td><?php echo isset($field->placeholder) && $field->placeholder ? esc_html($field->placeholder) : '-'; ?></td>
                             <td><?php echo esc_html($field->created_at); ?></td>
                             <td>
                                 <a href="?page=dcfm-fields&action=edit&field_id=<?php echo $field->id; ?>" 
@@ -1109,7 +1141,6 @@ class DynamicContactFormManager {
             $captcha .= $characters[rand(0, strlen($characters) - 1)];
         }
 
-        // Fallback: Inject custom CSS directly
         $custom_css = get_option('dcfm_custom_css', '');
         $inline_css = '';
         if (!empty($custom_css)) {
@@ -1134,11 +1165,19 @@ class DynamicContactFormManager {
                             <?php endif; ?>
                         </label>
                         
+                        <?php 
+                        // Define placeholder attribute if applicable
+                        $placeholder_attr = isset($field->placeholder) && in_array($field->field_type, ['text', 'email', 'tel', 'textarea', 'number', 'date']) 
+                            ? 'placeholder="' . esc_attr($field->placeholder) . '"' 
+                            : '';
+                        ?>
+                        
                         <?php if ($field->field_type === 'textarea'): ?>
                             <textarea 
                                 id="<?php echo esc_attr($field->field_name); ?>"
                                 name="<?php echo esc_attr($field->field_name); ?>"
                                 <?php echo $field->is_required ? 'required' : ''; ?>
+                                <?php echo $placeholder_attr; ?>
                             ></textarea>
                         <?php elseif ($field->field_type === 'date'): ?>
                             <input 
@@ -1146,6 +1185,7 @@ class DynamicContactFormManager {
                                 id="<?php echo esc_attr($field->field_name); ?>"
                                 name="<?php echo esc_attr($field->field_name); ?>"
                                 <?php echo $field->is_required ? 'required' : ''; ?>
+                                <?php echo $placeholder_attr; ?>
                             >
                         <?php elseif ($field->field_type === 'email'): ?>
                             <input 
@@ -1154,6 +1194,7 @@ class DynamicContactFormManager {
                                 name="<?php echo esc_attr($field->field_name); ?>"
                                 pattern="[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$"
                                 <?php echo $field->is_required ? 'required' : ''; ?>
+                                <?php echo $placeholder_attr; ?>
                             >
                         <?php elseif ($field->field_type === 'tel'): ?>
                             <input 
@@ -1162,6 +1203,7 @@ class DynamicContactFormManager {
                                 name="<?php echo esc_attr($field->field_name); ?>"
                                 pattern="[0-9-+\s()]+"
                                 <?php echo $field->is_required ? 'required' : ''; ?>
+                                <?php echo $placeholder_attr; ?>
                             >
                         <?php elseif ($field->field_type === 'number'): ?>
                             <input 
@@ -1169,6 +1211,7 @@ class DynamicContactFormManager {
                                 id="<?php echo esc_attr($field->field_name); ?>"
                                 name="<?php echo esc_attr($field->field_name); ?>"
                                 <?php echo $field->is_required ? 'required' : ''; ?>
+                                <?php echo $placeholder_attr; ?>
                             >
                         <?php elseif ($field->field_type === 'checkbox'): ?>
                             <input 
@@ -1200,6 +1243,7 @@ class DynamicContactFormManager {
                                 id="<?php echo esc_attr($field->field_name); ?>"
                                 name="<?php echo esc_attr($field->field_name); ?>"
                                 <?php echo $field->is_required ? 'required' : ''; ?>
+                                <?php echo $placeholder_attr; ?>
                             >
                         <?php endif; ?>
                     </div>
@@ -1229,6 +1273,30 @@ class DynamicContactFormManager {
         return ob_get_clean();
     }
 
+    private function restrict_multiple_submissions($form_id, $email) {
+        global $wpdb;
+        $submissions_table = $wpdb->prefix . 'dcfm_submissions';
+        
+        if (!is_email($email)) {
+            return false;
+        }
+        
+        $existing_submission = $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM $submissions_table 
+             WHERE form_id = %d 
+             AND submission_data LIKE %s",
+            $form_id,
+            '%"' . sanitize_email($email) . '"%'
+        ));
+        
+        if ($existing_submission > 0) {
+            error_log("DCFM: Duplicate submission attempt blocked for email: $email, form_id: $form_id");
+            return true;
+        }
+        
+        return false;
+    }
+
     public function handle_ajax_submission() {
         error_log('DCFM: AJAX Submission Received - POST Data: ' . print_r($_POST, true));
 
@@ -1245,6 +1313,13 @@ class DynamicContactFormManager {
         if ($form_id <= 0) {
             error_log('DCFM: Invalid form ID: ' . $form_id);
             wp_send_json_error('Invalid form ID');
+            return;
+        }
+        
+        $email = isset($_POST['email']) ? sanitize_email($_POST['email']) : '';
+        if ($email && $this->restrict_multiple_submissions($form_id, $email)) {
+            error_log("DCFM: Duplicate submission blocked for email: $email, form_id: $form_id");
+            wp_send_json_error('This email has already submitted this form.');
             return;
         }
         
@@ -1313,6 +1388,12 @@ class DynamicContactFormManager {
             return false;
         }
 
+        $email = isset($_POST['email']) ? sanitize_email($_POST['email']) : '';
+        if ($email && $this->restrict_multiple_submissions($form_id, $email)) {
+            $this->submission_errors[] = 'This email has already submitted this form.';
+            return false;
+        }
+
         $user_answer = isset($_POST['captcha_input']) ? sanitize_text_field($_POST['captcha_input']) : '';
         $correct_answer = isset($_POST['captcha_answer']) ? sanitize_text_field($_POST['captcha_answer']) : '';
         
@@ -1355,6 +1436,16 @@ class DynamicContactFormManager {
             update_option('dcfm_admin_email', sanitize_email($_POST['admin_email']));
             update_option('dcfm_user_email_subject', sanitize_text_field($_POST['user_email_subject']));
             update_option('dcfm_admin_email_subject', sanitize_text_field($_POST['admin_email_subject']));
+            
+            $header_color = sanitize_text_field($_POST['email_header_color']);
+            if (preg_match('/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/', $header_color)) {
+                update_option('dcfm_email_header_color', $header_color);
+            } else {
+                echo '<div class="error"><p>Invalid hex color code. Please use a valid hex color (e.g., #RRGGBB or #RGB).</p></div>';
+            }
+            
+            update_option('dcfm_user_email_header', wp_kses_post($_POST['user_email_header']));
+            update_option('dcfm_user_email_footer', wp_kses_post($_POST['user_email_footer']));
 
             echo '<div class="updated"><p>Email settings saved successfully!</p></div>';
         }
@@ -1362,6 +1453,9 @@ class DynamicContactFormManager {
         $admin_email = get_option('dcfm_admin_email', get_option('admin_email'));
         $user_email_subject = get_option('dcfm_user_email_subject', 'Thank you for contacting us!');
         $admin_email_subject = get_option('dcfm_admin_email_subject', 'New form submission received');
+        $email_header_color = get_option('dcfm_email_header_color', '#2271b1');
+        $user_email_header = get_option('dcfm_user_email_header', '<p>Thank you for reaching out to us. We have received your submission and will get back to you soon.</p><p>Here\'s a copy of the information you submitted:</p>');
+        $user_email_footer = get_option('dcfm_user_email_footer', '<p style="color: #666; font-size: 12px; margin-top: 20px;">This is an automated response from ' . esc_html(get_bloginfo('name')) . '. Please do not reply to this email.</p>');
 
         ?>
         <div class="wrap">
@@ -1391,12 +1485,49 @@ class DynamicContactFormManager {
                                 value="<?php echo esc_attr($admin_email_subject); ?>" required>
                         </td>
                     </tr>
+                    <tr>
+                        <th><label for="email_header_color">Header Color</label></th>
+                        <td>
+                            <input type="color" name="email_header_color" id="email_header_color_picker" 
+                                value="<?php echo esc_attr($email_header_color); ?>">
+                            <input type="text" name="email_header_color" id="email_header_color_text" 
+                                class="regular-text" style="width: 100px;" 
+                                value="<?php echo esc_attr($email_header_color); ?>" 
+                                placeholder="#RRGGBB">
+                            <p class="description">Select or enter a hex color code for the email header (applies to both admin and user emails).</p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label for="user_email_header">User Email Header</label></th>
+                        <td>
+                            <textarea name="user_email_header" id="user_email_header" rows="5" class="large-text"><?php echo esc_textarea($user_email_header); ?></textarea>
+                            <p class="description">Content displayed above the submission data in user confirmation emails. Basic HTML is allowed.</p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label for="user_email_footer">User Email Footer</label></th>
+                        <td>
+                            <textarea name="user_email_footer" id="user_email_footer" name="user_email_footer" rows="5" class="large-text"><?php echo esc_textarea($user_email_footer); ?></textarea>
+                            <p class="description">Content displayed below the submission data in user confirmation emails. Basic HTML is allowed.</p>
+                        </td>
+                    </tr>
                 </table>
 
                 <p class="submit">
                     <input type="submit" class="button button-primary" value="Save Email Settings">
                 </p>
             </form>
+            <script>
+                document.getElementById('email_header_color_picker').addEventListener('input', function() {
+                    document.getElementById('email_header_color_text').value = this.value;
+                });
+                document.getElementById('email_header_color_text').addEventListener('input', function() {
+                    const value = this.value;
+                    if (/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(value)) {
+                        document.getElementById('email_header_color_picker').value = value;
+                    }
+                });
+            </script>
         </div>
         <?php
     }
